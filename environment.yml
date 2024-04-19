@@ -1,4 +1,4 @@
-name: gaussian_splatting
+name: gaussian_flow2
 channels:
   - pytorch
   - conda-forge
