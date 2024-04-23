@@ -149,7 +149,7 @@ class GaussianModel:
     def freq_diff(self, parameters, time, param_len):
         l = torch.tensor(range(1,1+param_len), device="cuda").repeat(2,1)
         sin = torch.sin(2 * math.pi * time * l[0])
-        cos = torch.cos(time * l[1])
+        cos = torch.cos(2 * math.pi * time * l[1])
         return torch.sum(parameters[...,0:param_len]*sin, axis=-1) + torch.sum(parameters[...,param_len:]*cos, axis=-1)
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
