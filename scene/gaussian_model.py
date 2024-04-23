@@ -57,10 +57,14 @@ class GaussianModel:
         self.percent_dense = 0
         self.spatial_lr_scale = 0
         self.time = 0
-        self._rotation_time_parameter_len = 4 * 3
         self._position_time_parameter_len = 4 * 3
-        self._rotation_time_parameter = torch.empty(0)
+        self._rotation_time_parameter_len = 4 * 3
+        self._features_dc_time_parameter_len = 4 * 3 
+        self._features_rest_time_parameter_len = 0 * 3 # 용량이 너무 커서 배제
         self._position_time_parameter = torch.empty(0)
+        self._rotation_time_parameter = torch.empty(0)
+        self._features_dc_time_parameter = torch.empty(0)
+        self._features_rest_time_parameter = torch.empty(0)
         self.setup_functions()
 
     def capture(self): # gaussian save에 이용.
@@ -79,6 +83,8 @@ class GaussianModel:
             self.spatial_lr_scale,
             self._position_time_parameter,
             self._rotation_time_parameter,
+            self._features_dc_time_parameter,
+            self._features_rest_time_parameter,
         )
     
     def restore(self, model_args, training_args): # gaussian load에 이용.
@@ -95,7 +101,9 @@ class GaussianModel:
         opt_dict, 
         self.spatial_lr_scale,
         self._position_time_parameter,
-        self._rotation_time_parameter,) = model_args
+        self._rotation_time_parameter,
+        self._features_dc_time_parameter,
+        self._features_rest_time_parameter,) = model_args
 
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
@@ -128,8 +136,14 @@ class GaussianModel:
 
     @property
     def get_features(self):
-        features_dc = self._features_dc
-        features_rest = self._features_rest
+        param_dc_len = int(self._features_dc_time_parameter_len / 3)
+        param_rest_len = int(self._features_rest_time_parameter_len / 3)
+
+
+        features_dc = self._features_dc + self.poly_diff(self._features_dc_time_parameter[...,0:param_dc_len], self.time, param_dc_len) \
+                        + self.freq_diff(self._features_dc_time_parameter[...,param_dc_len:], self.time, param_dc_len)
+        features_rest = self._features_rest + self.poly_diff(self._features_rest_time_parameter[...,0:param_rest_len], self.time, param_rest_len) \
+                        + self.freq_diff(self._features_rest_time_parameter[...,param_rest_len:], self.time, param_rest_len)
         return torch.cat((features_dc, features_rest), dim=1)
     
     @property
@@ -154,36 +168,22 @@ class GaussianModel:
 
     def get_time_smooth_loss(self, time_interval):
         cur_time = self.time
-        """
-        pos_param_len = int(self._position_time_parameter_len /3)
-        rot_param_len = int(self._rotation_time_parameter_len /3)
-        temp_pose_param = self.poly_diff(self._position_time_parameter[...,0:pos_param_len], new_time, pos_param_len) + self.freq_diff(self._position_time_parameter[...,pos_param_len:], new_time, pos_param_len)
-        cur_pose_param = self.poly_diff(self._position_time_parameter[...,0:pos_param_len], self.time, pos_param_len) + self.freq_diff(self._position_time_parameter[...,pos_param_len:], self.time, pos_param_len)
-        temp_rot_param = self.poly_diff(self._rotation_time_parameter[...,0:rot_param_len], new_time, rot_param_len) + self.freq_diff(self._rotation_time_parameter[...,rot_param_len:], new_time, rot_param_len)
-        cur_rot_param = self.poly_diff(self._rotation_time_parameter[...,0:rot_param_len], self.time, rot_param_len) + self.freq_diff(self._rotation_time_parameter[...,rot_param_len:], self.time, rot_param_len)
 
-        #print(f"temp_pose_param : {temp_pose_param.shape}")
-        #print(f"temp_rot_param : {temp_rot_param.shape}")
-        #print(f"pose_diff form : {(temp_pose_param)[:10]}")
-        #print(f"pose_diff form : {(temp_pose_param - cur_pose_param)[:10]}")
-        #print(f"sum : {torch.sum((temp_pose_param - cur_pose_param))}")
-        #print(f"square_sum : {torch.sum((temp_pose_param - cur_pose_param)**2)}")
-        
-        return torch.sqrt(torch.mean((temp_pose_param - cur_pose_param)**2) + torch.mean((temp_rot_param - cur_rot_param)**2) )
-        """
         cur_pos = self.get_xyz
         cur_rot = self.get_rotation
+        cur_sh = self.get_features
 
         self.time = cur_time + time_interval
         new_pos = self.get_xyz
         new_rot = self.get_rotation
+        new_sh = self.get_features
 
         self.time = cur_time # return origin time
 
         #print(torch.sum((cur_pos - new_pos)**2) + torch.sum((cur_rot - new_rot)**2))
 
 
-        return torch.sqrt(torch.sum((cur_pos - new_pos)**2) + torch.sum((cur_rot - new_rot)**2))
+        return torch.sqrt(torch.sum((cur_pos - new_pos)**2) + torch.sum((cur_rot - new_rot)**2) + torch.sum((cur_sh - new_sh)**2))
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
@@ -215,8 +215,13 @@ class GaussianModel:
 
         position_time_parameter = torch.zeros([*self._xyz.shape, self._position_time_parameter_len], device ="cuda" )
         rotation_time_parameter = torch.zeros([*self._rotation.shape, self._rotation_time_parameter_len], device ="cuda" )
+        features_dc_time_parameter = torch.zeros([*self._features_dc.shape, self._features_dc_time_parameter_len], device="cuda")
+        features_rest_time_parameter = torch.zeros([*self._features_rest.shape, self._features_rest_time_parameter_len], device="cuda")
+
         self._position_time_parameter = nn.Parameter(position_time_parameter.requires_grad_(True))
         self._rotation_time_parameter = nn.Parameter(rotation_time_parameter.requires_grad_(True))
+        self._features_dc_time_parameter = nn.Parameter(features_dc_time_parameter.requires_grad_(True))
+        self._features_rest_time_parameter = nn.Parameter(features_rest_time_parameter.requires_grad_(True))
 
 
         self.max_radii2D = torch.zeros((self._xyz.shape[0]), device="cuda")
@@ -236,7 +241,9 @@ class GaussianModel:
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
             {'params': [self._position_time_parameter], 'lr': 0.0, "name": "tp_pos"},
-            {'params': [self._rotation_time_parameter], 'lr': training_args.position_lr_init, "name": "tp_rot"},
+            {'params': [self._rotation_time_parameter], 'lr': 0.0, "name": "tp_rot"},
+            {'params': [self._features_dc_time_parameter], 'lr': 0.0, "name": "tp_f_dc"},
+            {'params': [self._features_rest_time_parameter], 'lr': 0.0, "name": "tp_f_rest"},
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
@@ -251,7 +258,7 @@ class GaussianModel:
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
                 param_group['lr'] = lr_train
-            if param_group["name"] in ["tp_pos", "tp_rot"]:
+            if param_group["name"] in ["tp_pos", "tp_rot","tp_f_dc", "tp_f_rest"]:
                 if iteration < 3000:
                     param_group['lr'] = 0.0
                 else:
@@ -274,6 +281,10 @@ class GaussianModel:
             l.append('tp_pos_{}'.format(i))
         for i in range(self._rotation_time_parameter.shape[1]*self._rotation_time_parameter.shape[2]): ###
             l.append('tp_rot_{}'.format(i))
+        for i in range(self._features_dc_time_parameter.shape[1]*self._features_dc_time_parameter.shape[2]*self._features_dc_time_parameter.shape[3]):
+            l.append('tp_f_dc_{}'.format(i))
+        for i in range(self._features_rest_time_parameter.shape[1]*self._features_rest_time_parameter.shape[2]*self._features_rest_time_parameter.shape[3]):
+            l.append('tp_f_rest_{}'.format(i))
         return l
 
     def save_ply(self, path):
@@ -289,11 +300,13 @@ class GaussianModel:
 
         position_time_parameter = self._position_time_parameter.flatten(start_dim=1).contiguous().detach().cpu().numpy() ###
         rotation_time_parameter = self._rotation_time_parameter.flatten(start_dim=1).contiguous().detach().cpu().numpy()
+        features_dc_time_parameter = self._features_dc_time_parameter.transpose(1,2).flatten(start_dim=1).contiguous().detach().cpu().numpy()
+        features_rest_time_parameter = self._features_rest_time_parameter.transpose(1,2).flatten(start_dim=1).contiguous().detach().cpu().numpy()
 
         dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation, position_time_parameter, rotation_time_parameter), axis=1)
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation, position_time_parameter, rotation_time_parameter, features_dc_time_parameter, features_rest_time_parameter), axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
@@ -353,6 +366,26 @@ class GaussianModel:
             rot_tp[:, idx] = np.asarray(plydata.elements[0][attr_name])
         rot_tp = rot_tp.reshape((*rots.shape, self._rotation_time_parameter_len))
 
+        f_dc_tp_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("tp_f_dc_")]
+        f_dc_tp_names = sorted(f_dc_tp_names, key = lambda x: int(x.split('_')[-1] ))
+        if len(f_dc_tp_names) != 3 * self._features_dc_time_parameter_len:
+            print(f"f_dc_tp_names length : {len(f_dc_tp_names)}, parameters_len : {self._features_dc_time_parameter_len}")
+            assert len(f_dc_tp_names)== 3 * self._features_dc_time_parameter_len # (f_dc parameter 크기) * #(parameter)
+        f_dc_tp = np.zeros((xyz.shape[0], len(f_dc_tp_names)))
+        for idx, attr_name in enumerate(f_dc_tp_names):
+            f_dc_tp[:,idx] = np.asarray(plydata.elements[0][attr_name])
+        f_dc_tp = f_dc_tp.reshape((*features_dc.shape, self._features_dc_time_parameter_len))
+
+        f_rest_tp_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("tp_f_rest_")]
+        f_rest_tp_names = sorted(f_rest_tp_names, key = lambda x: int(x.split('_')[-1] ))
+        if len(f_rest_tp_names) != len(extra_f_names) * self._features_rest_time_parameter_len: # (f_rest parameter 크기) * #(parameter)
+            print(f"f_rest_tp_names : {len(f_rest_tp_names)}, len(extra_f_names) : {len(extra_f_names)}, parameter_size : {self._features_rest_time_parameter_len} ")
+            assert len(f_rest_tp_names)== len(extra_f_names) * self._features_rest_time_parameter_len # (f_rest parameter 크기) * #(parameter)
+        f_rest_tp = np.zeros((xyz.shape[0], len(f_rest_tp_names)))
+        for idx, attr_name in enumerate(f_rest_tp_names):
+            f_rest_tp[:, idx] = np.asarray(plydata.elements[0][attr_name])
+        f_rest_tp = f_rest_tp.reshape((*features_extra.shape, self._features_rest_time_parameter_len))
+
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
@@ -362,6 +395,8 @@ class GaussianModel:
         
         self._position_time_parameter = nn.Parameter(torch.tensor(pos_tp, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation_time_parameter = nn.Parameter(torch.tensor(rot_tp, dtype=torch.float, device="cuda").requires_grad_(True))
+        self._features_dc_time_parameter = nn.Parameter(torch.tensor(f_dc_tp, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
+        self._features_rest_time_parameter = nn.Parameter(torch.tensor(f_rest_tp, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         
         self.active_sh_degree = self.max_sh_degree
 
@@ -411,6 +446,8 @@ class GaussianModel:
         
         self._position_time_parameter = optimizable_tensors["tp_pos"]
         self._rotation_time_parameter = optimizable_tensors["tp_rot"]
+        self._features_dc_time_parameter = optimizable_tensors["tp_f_dc"]
+        self._features_rest_time_parameter = optimizable_tensors["tp_f_rest"]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
@@ -439,7 +476,7 @@ class GaussianModel:
 
         return optimizable_tensors
 
-    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tp_pos, new_tp_rot):
+    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tp_pos, new_tp_rot, new_tp_f_dc, new_tp_f_rest):
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
         "f_rest": new_features_rest,
@@ -447,7 +484,10 @@ class GaussianModel:
         "scaling" : new_scaling,
         "rotation" : new_rotation,
         "tp_pos" : new_tp_pos,
-        "tp_rot" : new_tp_rot,}
+        "tp_rot" : new_tp_rot,
+        "tp_f_dc" : new_tp_f_dc,
+        "tp_f_rest" : new_tp_f_rest,
+        }
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
         self._xyz = optimizable_tensors["xyz"]
@@ -459,6 +499,8 @@ class GaussianModel:
 
         self._position_time_parameter = optimizable_tensors["tp_pos"]
         self._rotation_time_parameter = optimizable_tensors["tp_rot"]
+        self._features_dc_time_parameter = optimizable_tensors["tp_f_dc"]
+        self._features_rest_time_parameter = optimizable_tensors["tp_f_rest"]
 
         self.xyz_gradient_accum = torch.zeros((self._xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self._xyz.shape[0], 1), device="cuda")
@@ -486,8 +528,10 @@ class GaussianModel:
 
         new_tp_pos = self._position_time_parameter[selected_pts_mask].repeat(N, 1, 1)
         new_tp_rot = self._rotation_time_parameter[selected_pts_mask].repeat(N, 1, 1)
+        new_tp_features_dc = self._features_dc_time_parameter[selected_pts_mask].repeat(N, 1, 1, 1)
+        new_tp_features_rest = self._features_rest_time_parameter[selected_pts_mask].repeat(N, 1, 1,1)
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_tp_pos, new_tp_rot)
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_tp_pos, new_tp_rot, new_tp_features_dc, new_tp_features_rest)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
@@ -507,8 +551,10 @@ class GaussianModel:
 
         new_tp_pos = self._position_time_parameter[selected_pts_mask]
         new_tp_rot = self._rotation_time_parameter[selected_pts_mask]
+        new_tp_features_dc = self._features_dc_time_parameter[selected_pts_mask]
+        new_tp_features_rest = self._features_rest_time_parameter[selected_pts_mask]
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tp_pos, new_tp_rot)
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tp_pos, new_tp_rot, new_tp_features_dc, new_tp_features_rest)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
         grads = self.xyz_gradient_accum / self.denom

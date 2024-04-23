@@ -86,6 +86,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
+
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
@@ -96,9 +97,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         if iteration > 3000:
-            if time_smooth_loss > 0: # sqrt(0)이 들어가면 backpropagation에서 error 발생 (sqrt(0)-> gradient inf)
-                #time_smooth_loss = gaussians.get_time_smooth_loss(scene.scene_info.time_delta /10)
-                loss += time_smooth_loss  # 아직 SH쪽 paramter 구현 안해서 대충 맞추기. 구현 후에는 *10 제거.
+            if time_smooth_loss > 0: # sqrt(0) has inf on its gradient, so it makes Nan at backpropagation step.
+                loss += time_smooth_loss
+
+        """
+        if iteration == opt.densify_until_iter:
+            do knn
+        if iteration > opt.densify_until_iter:
+            loss += knn_rigid_loss
+        
+        """
+
 
         loss.backward()
 
