@@ -20,7 +20,7 @@ from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
-
+import math
 class GaussianModel:
 
     def setup_functions(self):
@@ -56,9 +56,14 @@ class GaussianModel:
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
+        self.time = 0
+        self._rotation_time_parameter_len = 4 * 3
+        self._position_time_parameter_len = 4 * 3
+        self._rotation_time_parameter = torch.empty(0)
+        self._position_time_parameter = torch.empty(0)
         self.setup_functions()
 
-    def capture(self):
+    def capture(self): # gaussian save에 이용.
         return (
             self.active_sh_degree,
             self._xyz,
@@ -72,9 +77,11 @@ class GaussianModel:
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
+            self._position_time_parameter,
+            self._rotation_time_parameter,
         )
     
-    def restore(self, model_args, training_args):
+    def restore(self, model_args, training_args): # gaussian load에 이용.
         (self.active_sh_degree, 
         self._xyz, 
         self._features_dc, 
@@ -86,7 +93,10 @@ class GaussianModel:
         xyz_gradient_accum, 
         denom,
         opt_dict, 
-        self.spatial_lr_scale) = model_args
+        self.spatial_lr_scale,
+        self._position_time_parameter,
+        self._rotation_time_parameter,) = model_args
+
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
@@ -98,12 +108,24 @@ class GaussianModel:
     
     @property
     def get_rotation(self):
-        return self.rotation_activation(self._rotation)
+        if self._rotation_time_parameter.shape[-1] != self._rotation_time_parameter_len:
+            print("type error")
+            return self.rotation_activation(self._rotation)
+        param_len = int(self._rotation_time_parameter_len /3)
+        return self.rotation_activation(self._rotation \
+                + self.poly_diff(self._rotation_time_parameter[...,0:param_len], self.time, param_len) \
+                + self.freq_diff(self._rotation_time_parameter[...,param_len:], self.time, param_len))
+
     
     @property
     def get_xyz(self):
-        return self._xyz
-    
+        if self._position_time_parameter.shape[-1] != self._position_time_parameter_len:
+            print("type error")
+            return self._xyz
+        param_len = int(self._position_time_parameter_len /3)
+        return self._xyz + self.poly_diff(self._position_time_parameter[...,0:param_len], self.time, param_len) \
+                + self.freq_diff(self._position_time_parameter[...,param_len:], self.time, param_len)
+
     @property
     def get_features(self):
         features_dc = self._features_dc
@@ -117,6 +139,18 @@ class GaussianModel:
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
+    def setTime(self, t):
+        self.time = t
+
+    def poly_diff(self, parameters, time, param_len):
+        pol = torch.tensor([time ** i for i in range(1,1+param_len)], device="cuda")
+        return torch.sum(parameters * pol, axis=-1 )
+    
+    def freq_diff(self, parameters, time, param_len):
+        l = torch.tensor(range(1,1+param_len), device="cuda").repeat(2,1)
+        sin = torch.sin(2 * math.pi * time * l[0])
+        cos = torch.cos(time * l[1])
+        return torch.sum(parameters[...,0:param_len]*sin, axis=-1) + torch.sum(parameters[...,param_len:]*cos, axis=-1)
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
@@ -144,12 +178,21 @@ class GaussianModel:
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+
+        position_time_parameter = torch.zeros([*self._xyz.shape, self._position_time_parameter_len], device ="cuda" )
+        rotation_time_parameter = torch.zeros([*self._rotation.shape, self._rotation_time_parameter_len], device ="cuda" )
+        self._position_time_parameter = nn.Parameter(position_time_parameter.requires_grad_(True))
+        self._rotation_time_parameter = nn.Parameter(rotation_time_parameter.requires_grad_(True))
+
+
+        self.max_radii2D = torch.zeros((self._xyz.shape[0]), device="cuda")
+
+
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.xyz_gradient_accum = torch.zeros((self._xyz.shape[0], 1), device="cuda")
+        self.denom = torch.zeros((self._xyz.shape[0], 1), device="cuda")
 
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
@@ -157,7 +200,9 @@ class GaussianModel:
             {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
-            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
+            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
+            {'params': [self._position_time_parameter], 'lr': 0.0, "name": "tp_pos"},
+            {'params': [self._rotation_time_parameter], 'lr': training_args.position_lr_init, "name": "tp_rot"},
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
@@ -168,11 +213,16 @@ class GaussianModel:
 
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
+        lr_train = self.xyz_scheduler_args(iteration)
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
-                lr = self.xyz_scheduler_args(iteration)
-                param_group['lr'] = lr
-                return lr
+                param_group['lr'] = lr_train
+            if param_group["name"] in ["tp_pos", "tp_rot"]:
+                if iteration < 3000:
+                    param_group['lr'] = 0.0
+                else:
+                    param_group['lr'] = lr_train
+        return lr_train
 
     def construct_list_of_attributes(self):
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
@@ -186,6 +236,10 @@ class GaussianModel:
             l.append('scale_{}'.format(i))
         for i in range(self._rotation.shape[1]):
             l.append('rot_{}'.format(i))
+        for i in range(self._position_time_parameter.shape[1]*self._position_time_parameter.shape[2]): ###
+            l.append('tp_pos_{}'.format(i))
+        for i in range(self._rotation_time_parameter.shape[1]*self._rotation_time_parameter.shape[2]): ###
+            l.append('tp_rot_{}'.format(i))
         return l
 
     def save_ply(self, path):
@@ -199,10 +253,13 @@ class GaussianModel:
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
 
+        position_time_parameter = self._position_time_parameter.flatten(start_dim=1).contiguous().detach().cpu().numpy() ###
+        rotation_time_parameter = self._rotation_time_parameter.flatten(start_dim=1).contiguous().detach().cpu().numpy()
+
         dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation, position_time_parameter, rotation_time_parameter), axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
@@ -246,13 +303,32 @@ class GaussianModel:
         for idx, attr_name in enumerate(rot_names):
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
 
+        pos_tp_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("tp_pos_")]
+        pos_tp_names = sorted(pos_tp_names, key = lambda x: int(x.split('_')[-1] ))
+        assert len(pos_tp_names)== 3 * self._position_time_parameter_len # 3(position parameter 크기) * #(parameter)
+        pos_tp = np.zeros((xyz.shape[0], len(pos_tp_names)))
+        for idx, attr_name in enumerate(pos_tp_names):
+            pos_tp[:, idx] = np.asarray(plydata.elements[0][attr_name])
+        pos_tp = pos_tp.reshape((xyz.shape[0],3, self._position_time_parameter_len))
+
+        rot_tp_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("tp_rot_")]
+        rot_tp_names = sorted(rot_tp_names, key = lambda x: int(x.split('_')[-1] ))
+        assert len(rot_tp_names)== len(rot_names) * self._rotation_time_parameter_len # 4(rotation parameter 크기) * #(parameter)
+        rot_tp = np.zeros((xyz.shape[0], len(rot_tp_names)))
+        for idx, attr_name in enumerate(rot_tp_names):
+            rot_tp[:, idx] = np.asarray(plydata.elements[0][attr_name])
+        rot_tp = rot_tp.reshape((*rots.shape, self._rotation_time_parameter_len))
+
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
-
+        
+        self._position_time_parameter = nn.Parameter(torch.tensor(pos_tp, dtype=torch.float, device="cuda").requires_grad_(True))
+        self._rotation_time_parameter = nn.Parameter(torch.tensor(rot_tp, dtype=torch.float, device="cuda").requires_grad_(True))
+        
         self.active_sh_degree = self.max_sh_degree
 
     def replace_tensor_to_optimizer(self, tensor, name):
@@ -298,6 +374,9 @@ class GaussianModel:
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
+        
+        self._position_time_parameter = optimizable_tensors["tp_pos"]
+        self._rotation_time_parameter = optimizable_tensors["tp_rot"]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
@@ -326,13 +405,15 @@ class GaussianModel:
 
         return optimizable_tensors
 
-    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation):
+    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tp_pos, new_tp_rot):
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
         "f_rest": new_features_rest,
         "opacity": new_opacities,
         "scaling" : new_scaling,
-        "rotation" : new_rotation}
+        "rotation" : new_rotation,
+        "tp_pos" : new_tp_pos,
+        "tp_rot" : new_tp_rot,}
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
         self._xyz = optimizable_tensors["xyz"]
@@ -342,12 +423,15 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        self._position_time_parameter = optimizable_tensors["tp_pos"]
+        self._rotation_time_parameter = optimizable_tensors["tp_rot"]
+
+        self.xyz_gradient_accum = torch.zeros((self._xyz.shape[0], 1), device="cuda")
+        self.denom = torch.zeros((self._xyz.shape[0], 1), device="cuda")
+        self.max_radii2D = torch.zeros((self._xyz.shape[0]), device="cuda")
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
-        n_init_points = self.get_xyz.shape[0]
+        n_init_points = self._xyz.shape[0]
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
         padded_grad[:grads.shape[0]] = grads.squeeze()
@@ -359,14 +443,17 @@ class GaussianModel:
         means =torch.zeros((stds.size(0), 3),device="cuda")
         samples = torch.normal(mean=means, std=stds)
         rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
-        new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
+        new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self._xyz[selected_pts_mask].repeat(N, 1)
         new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
+        new_tp_pos = self._position_time_parameter[selected_pts_mask].repeat(N, 1, 1)
+        new_tp_rot = self._rotation_time_parameter[selected_pts_mask].repeat(N, 1, 1)
+
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_tp_pos, new_tp_rot)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
@@ -384,7 +471,10 @@ class GaussianModel:
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
+        new_tp_pos = self._position_time_parameter[selected_pts_mask]
+        new_tp_rot = self._rotation_time_parameter[selected_pts_mask]
+
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tp_pos, new_tp_rot)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
         grads = self.xyz_gradient_accum / self.denom
