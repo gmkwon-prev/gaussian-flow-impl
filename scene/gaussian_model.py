@@ -151,6 +151,40 @@ class GaussianModel:
         sin = torch.sin(2 * math.pi * time * l[0])
         cos = torch.cos(2 * math.pi * time * l[1])
         return torch.sum(parameters[...,0:param_len]*sin, axis=-1) + torch.sum(parameters[...,param_len:]*cos, axis=-1)
+
+    def get_time_smooth_loss(self, time_interval):
+        cur_time = self.time
+        """
+        pos_param_len = int(self._position_time_parameter_len /3)
+        rot_param_len = int(self._rotation_time_parameter_len /3)
+        temp_pose_param = self.poly_diff(self._position_time_parameter[...,0:pos_param_len], new_time, pos_param_len) + self.freq_diff(self._position_time_parameter[...,pos_param_len:], new_time, pos_param_len)
+        cur_pose_param = self.poly_diff(self._position_time_parameter[...,0:pos_param_len], self.time, pos_param_len) + self.freq_diff(self._position_time_parameter[...,pos_param_len:], self.time, pos_param_len)
+        temp_rot_param = self.poly_diff(self._rotation_time_parameter[...,0:rot_param_len], new_time, rot_param_len) + self.freq_diff(self._rotation_time_parameter[...,rot_param_len:], new_time, rot_param_len)
+        cur_rot_param = self.poly_diff(self._rotation_time_parameter[...,0:rot_param_len], self.time, rot_param_len) + self.freq_diff(self._rotation_time_parameter[...,rot_param_len:], self.time, rot_param_len)
+
+        #print(f"temp_pose_param : {temp_pose_param.shape}")
+        #print(f"temp_rot_param : {temp_rot_param.shape}")
+        #print(f"pose_diff form : {(temp_pose_param)[:10]}")
+        #print(f"pose_diff form : {(temp_pose_param - cur_pose_param)[:10]}")
+        #print(f"sum : {torch.sum((temp_pose_param - cur_pose_param))}")
+        #print(f"square_sum : {torch.sum((temp_pose_param - cur_pose_param)**2)}")
+        
+        return torch.sqrt(torch.mean((temp_pose_param - cur_pose_param)**2) + torch.mean((temp_rot_param - cur_rot_param)**2) )
+        """
+        cur_pos = self.get_xyz
+        cur_rot = self.get_rotation
+
+        self.time = cur_time + time_interval
+        new_pos = self.get_xyz
+        new_rot = self.get_rotation
+
+        self.time = cur_time # return origin time
+
+        #print(torch.sum((cur_pos - new_pos)**2) + torch.sum((cur_rot - new_rot)**2))
+
+
+        return torch.sqrt(torch.sum((cur_pos - new_pos)**2) + torch.sum((cur_rot - new_rot)**2))
+
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1

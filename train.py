@@ -85,14 +85,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-        #time_smooth_loss = gaussians.get_time_smooth_loss(scene.scene_info.time_delta /10)
-
+        
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
         ### lasso for time parameters. 논문에는 없는데, 유사한 구조를 사용한 다른 논문(EfficinetDynamic)도 논문에는 없으나 사용함. 근데 사용은 안하네... 음...
         #lasso_loss = torch.nanmean(torch.abs(gaussians._position_time_parameter)) 
+        time_smooth_loss = gaussians.get_time_smooth_loss(scene.scene_info.time_delta /10)
+        #time_smooth_loss=torch.nanmean(torch.abs(gaussians._position_time_parameter)) 
+
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        if iteration > 3000:
+            if time_smooth_loss > 0: # sqrt(0)이 들어가면 backpropagation에서 error 발생 (sqrt(0)-> gradient inf)
+                #time_smooth_loss = gaussians.get_time_smooth_loss(scene.scene_info.time_delta /10)
+                loss += time_smooth_loss  # 아직 SH쪽 paramter 구현 안해서 대충 맞추기. 구현 후에는 *10 제거.
+
         loss.backward()
 
         iter_end.record()
@@ -112,9 +119,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
 
-            if iteration % 1000 == 0:
+            if iteration % 100 == 0:
                 print("")
-                print(f"current loss : {loss.item()}")
+                print(f"current loss : {(1.0 - opt.lambda_dssim)} * {Ll1} + {opt.lambda_dssim} * {(1.0 - ssim(image, gt_image))} + {time_smooth_loss} = {loss.item()}")
                 print(f"gaussian params :{torch.sum(torch.abs(gaussians._position_time_parameter))}, {torch.sum(torch.abs(gaussians._rotation_time_parameter))}")
                 print(f"time : {viewpoint_cam.time}, {gaussians.time}")
                 """
