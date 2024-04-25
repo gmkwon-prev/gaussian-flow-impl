@@ -22,6 +22,10 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+
+from scipy.spatial import KDTree
+import numpy as np
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -29,6 +33,8 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+    indices = torch.empty(0) # knn index list. 
+
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -100,15 +106,29 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if time_smooth_loss > 0: # sqrt(0) has inf on its gradient, so it makes Nan at backpropagation step.
                 loss += time_smooth_loss
 
-        """
+        knn_rigid_loss = 0
         if iteration == opt.densify_until_iter:
-            do knn
+            data = torch.tensor(gaussians.get_xyz, device='cpu').numpy()
+            tree = KDTree(data)
+            distances, indices = tree.query(data, k=opt.knn_param +1) # 논문에 안적혀있다... 임의로 8이라 정의
+            indices = torch.tensor(indices[:,1:]) # 가장 첫 번째 항은 자기자신. 따라서 배제.
+            
         if iteration > opt.densify_until_iter:
-            loss += knn_rigid_loss
-        
-        """
-
-
+            points = torch.tensor(gaussians.get_xyz, device='cpu')[:,None,:].repeat(1,opt.knn_param, 1)
+            if points.shape[0] != indices.shape[0] or points.shape[1] != indices.shape[1]:
+                print("Error occur on knn rigid_loss")
+            #print(torch.tensor(gaussians.get_xyz, device='cpu').shape)
+            #print(indices.shape)
+            #print(torch.tensor(gaussians.get_xyz, device='cpu')[indices.squeeze()].shape)
+            near_points =torch.tensor(gaussians.get_xyz, device='cpu')[indices.squeeze()].reshape(points.shape)
+            #near_points = torch.tensor([self.get_xyz[index] for index in self._indices])
+            if points.shape != near_points.shape:
+                print("Error occur on knn rigid_loss")
+            knn_rigid_loss =torch.sqrt(torch.sum( (near_points - points) **2  ))
+           
+            if knn_rigid_loss >0:
+                loss+= knn_rigid_loss.to(loss.device)
+        cur_loss= loss.item()
         loss.backward()
 
         iter_end.record()
@@ -128,9 +148,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
 
-            if iteration % 100 == 0:
+            if iteration % 1000 == 0:
                 print("")
-                print(f"current loss : {(1.0 - opt.lambda_dssim)} * {Ll1} + {opt.lambda_dssim} * {(1.0 - ssim(image, gt_image))} + {time_smooth_loss} = {loss.item()}")
+                print(f"current loss : {(1.0 - opt.lambda_dssim)} * {Ll1} + {opt.lambda_dssim} * {(1.0 - ssim(image, gt_image))} + {time_smooth_loss} +{knn_rigid_loss}= {cur_loss}")
                 print(f"gaussian params :{torch.sum(torch.abs(gaussians._position_time_parameter))}, {torch.sum(torch.abs(gaussians._rotation_time_parameter))}")
                 print(f"time : {viewpoint_cam.time}, {gaussians.time}")
                 """

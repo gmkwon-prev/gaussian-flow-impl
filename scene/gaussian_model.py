@@ -181,9 +181,8 @@ class GaussianModel:
         self.time = cur_time # return origin time
 
         #print(torch.sum((cur_pos - new_pos)**2) + torch.sum((cur_rot - new_rot)**2))
-
-
         return torch.sqrt(torch.sum((cur_pos - new_pos)**2) + torch.sum((cur_rot - new_rot)**2) + torch.sum((cur_sh - new_sh)**2))
+
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
