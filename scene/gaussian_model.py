@@ -57,14 +57,17 @@ class GaussianModel:
         self.percent_dense = 0
         self.spatial_lr_scale = 0
         self.time = 0
-        self._position_time_parameter_len = 4 * 3
-        self._rotation_time_parameter_len = 4 * 3
-        self._features_dc_time_parameter_len = 4 * 3 
-        self._features_rest_time_parameter_len = 0 * 3 # 용량이 너무 커서 배제
+        self._position_time_parameter_len = 0
+        self._rotation_time_parameter_len = 0
+        self._features_dc_time_parameter_len = 0
+        self._features_rest_time_parameter_len = 0 # radiance에 parameter을 거는 것이기 때문에, rest에 굳이 걸 필요 없음.
         self._position_time_parameter = torch.empty(0)
         self._rotation_time_parameter = torch.empty(0)
         self._features_dc_time_parameter = torch.empty(0)
         self._features_rest_time_parameter = torch.empty(0)
+        self._lambda_s = torch.tensor(1.)
+        self._lambda_b = torch.tensor(0.)
+        self._lambda_optimizer = None
         self.setup_functions()
 
     def capture(self): # gaussian save에 이용.
@@ -81,6 +84,8 @@ class GaussianModel:
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
+            self._lambda_s,
+            self._lambda_b,
             self._position_time_parameter,
             self._rotation_time_parameter,
             self._features_dc_time_parameter,
@@ -100,6 +105,8 @@ class GaussianModel:
         denom,
         opt_dict, 
         self.spatial_lr_scale,
+        self._lambda_s,
+        self._lambda_b,
         self._position_time_parameter,
         self._rotation_time_parameter,
         self._features_dc_time_parameter,
@@ -154,7 +161,13 @@ class GaussianModel:
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
     def setTime(self, t):
-        self.time = t
+        self.time = self._lambda_s * t + self._lambda_b
+
+    def setDDDM(self,dddm_param_len):
+        self._position_time_parameter_len = dddm_param_len[0] * 3
+        self._rotation_time_parameter_len = dddm_param_len[1] * 3
+        self._features_dc_time_parameter_len = dddm_param_len[2] * 3 
+        self._features_rest_time_parameter_len = dddm_param_len[3] * 3 # radiance에 parameter을 거는 것이기 때문에, rest에 굳이 걸 필요 없음.
 
     def poly_diff(self, parameters, time, param_len):
         pol = torch.tensor([time ** i for i in range(1,1+param_len)], device="cuda")
@@ -173,12 +186,12 @@ class GaussianModel:
         cur_rot = self.get_rotation
         cur_sh = self.get_features
 
-        self.time = cur_time + time_interval
+        self.setTime(cur_time + time_interval)
         new_pos = self.get_xyz
         new_rot = self.get_rotation
         new_sh = self.get_features
 
-        self.time = cur_time # return origin time
+        self.setTime(cur_time) # return origin time
 
         #print(torch.sum((cur_pos - new_pos)**2) + torch.sum((cur_rot - new_rot)**2))
         return torch.sqrt(torch.sum((cur_pos - new_pos)**2) + torch.sum((cur_rot - new_rot)**2) + torch.sum((cur_sh - new_sh)**2))
@@ -217,6 +230,9 @@ class GaussianModel:
         features_dc_time_parameter = torch.zeros([*self._features_dc.shape, self._features_dc_time_parameter_len], device="cuda")
         features_rest_time_parameter = torch.zeros([*self._features_rest.shape, self._features_rest_time_parameter_len], device="cuda")
 
+        self._lambda_s = nn.Parameter(torch.tensor(1.).requires_grad_(True))
+        self._lambda_b = nn.Parameter(torch.tensor(0.).requires_grad_(True))
+
         self._position_time_parameter = nn.Parameter(position_time_parameter.requires_grad_(True))
         self._rotation_time_parameter = nn.Parameter(rotation_time_parameter.requires_grad_(True))
         self._features_dc_time_parameter = nn.Parameter(features_dc_time_parameter.requires_grad_(True))
@@ -245,20 +261,27 @@ class GaussianModel:
             {'params': [self._features_rest_time_parameter], 'lr': 0.0, "name": "tp_f_rest"},
         ]
 
+
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+
+        lam = [
+            {'params': [self._lambda_s], 'lr': 1e-3, "name": "lambda_s"},
+            {'params': [self._lambda_b], 'lr': 1e-3, "name": "lambda_b"},
+            ]
+        self._lambda_optimizer = torch.optim.Adam(lam, lr=1e-5, eps=1e-15)
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
                                                     max_steps=training_args.position_lr_max_steps)
 
-    def update_learning_rate(self, iteration):
+    def update_learning_rate(self, iteration, dddm_from_iter):
         ''' Learning rate scheduling per step '''
         lr_train = self.xyz_scheduler_args(iteration)
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
                 param_group['lr'] = lr_train
             if param_group["name"] in ["tp_pos", "tp_rot","tp_f_dc", "tp_f_rest"]:
-                if iteration < 3000:
+                if iteration < dddm_from_iter:
                     param_group['lr'] = 0.0
                 else:
                     param_group['lr'] = lr_train
@@ -351,7 +374,9 @@ class GaussianModel:
 
         pos_tp_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("tp_pos_")]
         pos_tp_names = sorted(pos_tp_names, key = lambda x: int(x.split('_')[-1] ))
-        assert len(pos_tp_names)== 3 * self._position_time_parameter_len # 3(position parameter 크기) * #(parameter)
+        if len(pos_tp_names) != 3 * self._position_time_parameter_len: # 3(position parameter 크기) * #(parameter)
+            self._position_time_parameter_len = int(len(pos_tp_names) / 3)
+        #assert len(pos_tp_names)== 3 * self._position_time_parameter_len # 3(position parameter 크기) * #(parameter)
         pos_tp = np.zeros((xyz.shape[0], len(pos_tp_names)))
         for idx, attr_name in enumerate(pos_tp_names):
             pos_tp[:, idx] = np.asarray(plydata.elements[0][attr_name])
@@ -359,7 +384,8 @@ class GaussianModel:
 
         rot_tp_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("tp_rot_")]
         rot_tp_names = sorted(rot_tp_names, key = lambda x: int(x.split('_')[-1] ))
-        assert len(rot_tp_names)== len(rot_names) * self._rotation_time_parameter_len # 4(rotation parameter 크기) * #(parameter)
+        if len(rot_tp_names) != len(rot_names) * self._rotation_time_parameter_len: # 4(rotation parameter 크기) * #(parameter)
+            self._rotation_time_parameter_len = int(len(rot_tp_names) / len(rot_names))
         rot_tp = np.zeros((xyz.shape[0], len(rot_tp_names)))
         for idx, attr_name in enumerate(rot_tp_names):
             rot_tp[:, idx] = np.asarray(plydata.elements[0][attr_name])
@@ -368,8 +394,9 @@ class GaussianModel:
         f_dc_tp_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("tp_f_dc_")]
         f_dc_tp_names = sorted(f_dc_tp_names, key = lambda x: int(x.split('_')[-1] ))
         if len(f_dc_tp_names) != 3 * self._features_dc_time_parameter_len:
-            print(f"f_dc_tp_names length : {len(f_dc_tp_names)}, parameters_len : {self._features_dc_time_parameter_len}")
-            assert len(f_dc_tp_names)== 3 * self._features_dc_time_parameter_len # (f_dc parameter 크기) * #(parameter)
+            self._features_dc_time_parameter_len = int(len(f_dc_tp_names) /3)
+            #print(f"f_dc_tp_names length : {len(f_dc_tp_names)}, parameters_len : {self._features_dc_time_parameter_len}")
+            #assert len(f_dc_tp_names)== 3 * self._features_dc_time_parameter_len # (f_dc parameter 크기) * #(parameter)
         f_dc_tp = np.zeros((xyz.shape[0], len(f_dc_tp_names)))
         for idx, attr_name in enumerate(f_dc_tp_names):
             f_dc_tp[:,idx] = np.asarray(plydata.elements[0][attr_name])
@@ -378,8 +405,9 @@ class GaussianModel:
         f_rest_tp_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("tp_f_rest_")]
         f_rest_tp_names = sorted(f_rest_tp_names, key = lambda x: int(x.split('_')[-1] ))
         if len(f_rest_tp_names) != len(extra_f_names) * self._features_rest_time_parameter_len: # (f_rest parameter 크기) * #(parameter)
-            print(f"f_rest_tp_names : {len(f_rest_tp_names)}, len(extra_f_names) : {len(extra_f_names)}, parameter_size : {self._features_rest_time_parameter_len} ")
-            assert len(f_rest_tp_names)== len(extra_f_names) * self._features_rest_time_parameter_len # (f_rest parameter 크기) * #(parameter)
+            self._features_rest_time_parameter_len = int(len(f_rest_tp_names) / len(extra_f_names))
+            #print(f"f_rest_tp_names : {len(f_rest_tp_names)}, len(extra_f_names) : {len(extra_f_names)}, parameter_size : {self._features_rest_time_parameter_len} ")
+            #assert len(f_rest_tp_names)== len(extra_f_names) * self._features_rest_time_parameter_len # (f_rest parameter 크기) * #(parameter)
         f_rest_tp = np.zeros((xyz.shape[0], len(f_rest_tp_names)))
         for idx, attr_name in enumerate(f_rest_tp_names):
             f_rest_tp[:, idx] = np.asarray(plydata.elements[0][attr_name])

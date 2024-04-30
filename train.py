@@ -25,6 +25,7 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 
 from scipy.spatial import KDTree
 import numpy as np
+import shutil
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -38,6 +39,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
+    gaussians.setDDDM(opt.dddm_param_len) ### dddm setting
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
     if checkpoint:
@@ -72,7 +74,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         iter_start.record()
 
-        gaussians.update_learning_rate(iteration)
+        gaussians.update_learning_rate(iteration, opt.dddm_from_iter)
 
         # Every 1000 its we increase the levels of SH up to a maximum degree
         if iteration % 1000 == 0:
@@ -89,10 +91,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)                
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
-
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
@@ -100,21 +101,22 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         #lasso_loss = torch.nanmean(torch.abs(gaussians._position_time_parameter)) 
         time_smooth_loss = gaussians.get_time_smooth_loss(scene.scene_info.time_delta /10)
         #time_smooth_loss=torch.nanmean(torch.abs(gaussians._position_time_parameter)) 
-
+    
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-        if iteration > 3000:
+        if iteration > opt.dddm_from_iter:
             if time_smooth_loss > 0: # sqrt(0) has inf on its gradient, so it makes Nan at backpropagation step.
                 loss += time_smooth_loss
 
         knn_rigid_loss = 0
         if iteration == opt.densify_until_iter:
-            data = torch.tensor(gaussians.get_xyz, device='cpu').numpy()
+            data = gaussians.get_xyz.to(torch.device('cpu')).clone().detach().numpy() #torch.tensor(gaussians.get_xyz, device='cpu').numpy()
             tree = KDTree(data)
-            distances, indices = tree.query(data, k=opt.knn_param +1) # 논문에 안적혀있다... 임의로 8이라 정의
+            distances, indices = tree.query(data, k=opt.knn_param +1) # 논문에 안적혀있다... 임의로 7이라 정의
             indices = torch.tensor(indices[:,1:]) # 가장 첫 번째 항은 자기자신. 따라서 배제.
             
-        if iteration > opt.densify_until_iter:
-            points = torch.tensor(gaussians.get_xyz, device='cpu')[:,None,:].repeat(1,opt.knn_param, 1)
+        if iteration > opt.densify_until_iter and iteration < opt.knn_until_iter:
+            gaussian_means = gaussians.get_xyz.to(torch.device('cpu')).clone().detach()
+            points = gaussian_means[:,None,:].repeat(1,opt.knn_param, 1) #torch.tensor(gaussians.get_xyz, device='cpu')[:,None,:].repeat(1,opt.knn_param, 1)
             if points.shape[0] != indices.shape[0] or points.shape[1] != indices.shape[1]:
                 print("Error occur on knn rigid_loss")
             #print(torch.tensor(gaussians.get_xyz, device='cpu').shape)
@@ -127,7 +129,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             knn_rigid_loss =torch.sqrt(torch.sum( (near_points - points) **2  ))
            
             if knn_rigid_loss >0:
-                loss+= knn_rigid_loss.to(loss.device)
+                loss+= opt.lambda_knn * knn_rigid_loss.to(loss.device)
+        """
+        #opacity cross_entrophy loss 
+        opas = gaussians.get_opacity[visibility_filter].to(torch.device('cpu')).clone().detach()
+        opas_index = torch.where(opas < 1 & opas > 0, True, False)
+        opas = opas[opas_index]
+        loss_op = torch.sum(- opas * torch.log(opas) - (1-opas) * torch.log(1 - opas) ) / opas.shape[0]
+        loss += loss_op.to(loss.device)
+        """
         cur_loss= loss.item()
         loss.backward()
 
@@ -141,23 +151,24 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
-
-            # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
-            if (iteration in saving_iterations):
-                print("\n[ITER {}] Saving Gaussians".format(iteration))
-                scene.save(iteration)
-
+            
             if iteration % 1000 == 0:
                 print("")
                 print(f"current loss : {(1.0 - opt.lambda_dssim)} * {Ll1} + {opt.lambda_dssim} * {(1.0 - ssim(image, gt_image))} + {time_smooth_loss} +{knn_rigid_loss}= {cur_loss}")
                 print(f"gaussian params :{torch.sum(torch.abs(gaussians._position_time_parameter))}, {torch.sum(torch.abs(gaussians._rotation_time_parameter))}")
                 print(f"time : {viewpoint_cam.time}, {gaussians.time}")
+                print(f"lambdas : {gaussians._lambda_s}, {gaussians._lambda_b}")
                 """
                 for param_group in gaussians.optimizer.param_groups:
                     if param_group["name"] in ["xyz", "tp_pos", "tp_rot"]:
                         print("lr "+param_group["name"]+" : "+str(param_group['lr']))
                 """
+
+            # Log and save
+            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background), gaussians.get_xyz.shape[0], time_smooth_loss, knn_rigid_loss)
+            if (iteration in saving_iterations):
+                print("\n[ITER {}] Saving Gaussians".format(iteration))
+                scene.save(iteration)
 
             # Densification
             if iteration < opt.densify_until_iter:
@@ -176,6 +187,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
+                gaussians._lambda_optimizer.step()
+                gaussians._lambda_optimizer.zero_grad(set_to_none = True)
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
@@ -195,6 +208,10 @@ def prepare_output_and_logger(args):
     with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
         cfg_log_f.write(str(Namespace(**vars(args))))
 
+    # copy args file to output path
+    shutil.copyfile("./arguments/__init__.py", args.model_path + "/arguments.py")
+
+
     # Create Tensorboard writer
     tb_writer = None
     if TENSORBOARD_FOUND:
@@ -203,10 +220,13 @@ def prepare_output_and_logger(args):
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
+def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, num_gaussian, time_smooth_loss, knn_rigid_loss):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
+        tb_writer.add_scalar('train_loss_patches/time_smooth_loss', time_smooth_loss, iteration)
+        tb_writer.add_scalar('train_loss_patches/knn_rigid_loss', knn_rigid_loss, iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
+        tb_writer.add_scalar('num_gaussian', num_gaussian, iteration)
         tb_writer.add_scalar('iter_time', elapsed, iteration)
 
     # Report test and samples of training set
@@ -250,7 +270,7 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[10_000, 20_000, 30_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(1000, 30001, 1000)))
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[10_000, 20_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])

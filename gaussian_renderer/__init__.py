@@ -15,9 +15,7 @@ from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianR
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 
-### adaptive timestamp Scaling
-def adaptive_timestamp_scaling(t : float):
-    return 1.0*t + 0.0
+
 
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
     """
@@ -27,7 +25,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     """
     
     ###set gaussin time. adaptive time scaling.
-    pc.setTime(adaptive_timestamp_scaling(viewpoint_camera.time))
+    pc.setTime(viewpoint_camera.time)
  
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
