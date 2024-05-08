@@ -88,10 +88,12 @@ class OptimizationParams(ParamGroup):
         self.densify_grad_threshold = 0.0002
         self.random_background = False
         self.dddm_from_iter = 2000 # supple A paragraph 2
-        self.knn_param = 7
-        self.lambda_knn = 0.01
+        self.knn_param = 27
+        self.lambda_knn = 1e-4
         self.knn_until_iter = 20_000 # suppl A paragraph 2
-        self.dddm_param_len = (4,4,4,0)
+        self.dddm_param_len = ((16,16),(16,16),(16,16),(0,0))#((8,4), (8,4), (8,4), (0, 0))
+        self.lambda_lasso = 8e-7
+
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):
