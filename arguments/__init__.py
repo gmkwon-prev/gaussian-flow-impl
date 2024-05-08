@@ -92,7 +92,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_knn = 1e-4
         self.knn_until_iter = 20_000 # suppl A paragraph 2
         self.dddm_param_len = ((16,16),(16,16),(16,16),(0,0))#((8,4), (8,4), (8,4), (0, 0))
-        self.lambda_lasso = 8e-7
+        self.lambda_weight_decay = 8e-7
 
         super().__init__(parser, "Optimization Parameters")
 

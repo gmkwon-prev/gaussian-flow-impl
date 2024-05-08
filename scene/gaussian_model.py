@@ -65,14 +65,10 @@ class GaussianModel:
         self._fdc_fourier_len = 0
         self._frt_poly_len=0
         self._frt_fourier_len=0
-        #self._position_time_parameter_len = 0
-        #self._rotation_time_parameter_len = 0
-        #self._features_dc_time_parameter_len = 0
-        #self._features_rest_time_parameter_len = 0 # radiance에 parameter을 거는 것이기 때문에, rest에 굳이 걸 필요 없음.
         self._position_time_parameter = torch.empty(0)
         self._rotation_time_parameter = torch.empty(0)
         self._features_dc_time_parameter = torch.empty(0)
-        self._features_rest_time_parameter = torch.empty(0)
+        self._features_rest_time_parameter = torch.empty(0) # not use.
         self._lambda_s = torch.tensor(1.)
         self._lambda_b = torch.tensor(0.)
         self._lambda_optimizer = None
@@ -153,16 +149,12 @@ class GaussianModel:
         if self._position_time_parameter.shape[-1] != self._pt_poly_len + 2*self._pt_fourier_len:
             print("type error")
             return self._xyz
-        #param_len = int(self._position_time_parameter_len /3)
         return self._xyz + self.poly_diff(self._position_time_parameter[...,0:self._pt_poly_len], self.time, self._pt_poly_len) \
                 + self.freq_diff(self._position_time_parameter[...,self._pt_poly_len:self._pt_poly_len + 2*self._pt_fourier_len], self.time, self._pt_fourier_len)
 
 
     @property
     def get_features(self):
-        #param_dc_len = int(self._features_dc_time_parameter_len / 3)
-        #param_rest_len = int(self._features_rest_time_parameter_len / 3)
-
 
         features_dc = self._features_dc + self.poly_diff(self._features_dc_time_parameter[...,0:self._fdc_poly_len], self.time, self._fdc_poly_len) \
                         + self.freq_diff(self._features_dc_time_parameter[...,self._fdc_poly_len:self._fdc_poly_len + 2*self._fdc_fourier_len], self.time, self._fdc_fourier_len)
@@ -178,18 +170,13 @@ class GaussianModel:
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
     def D_xyz(self):
-        #param_len = int(self._position_time_parameter_len /3)
         return self.poly_diff(self._position_time_parameter[...,0:self._pt_poly_len], self.time, self._pt_poly_len) \
                 + self.freq_diff(self._position_time_parameter[...,self._pt_poly_len:self._pt_poly_len + 2* self._pt_fourier_len], self.time, self._pt_fourier_len)
     def D_rotation(self):
-        #param_len = int(self._rotation_time_parameter_len /3)
         return self.rotation_activation(self.poly_diff(self._rotation_time_parameter[...,0:self._rot_poly_len], self.time, self._rot_poly_len) \
                 + self.freq_diff(self._rotation_time_parameter[...,self._rot_poly_len:self._rot_poly_len+2* self._rot_fourier_len], self.time, self._rot_fourier_len))
     
     def D_features(self):
-        #param_dc_len = int(self._features_dc_time_parameter_len / 3)
-        #param_rest_len = int(self._features_rest_time_parameter_len / 3)
-
 
         features_dc = self.poly_diff(self._features_dc_time_parameter[...,0:self._fdc_poly_len], self.time, self._fdc_poly_len) \
                         + self.freq_diff(self._features_dc_time_parameter[...,self._fdc_poly_len:self._fdc_poly_len + 2*self._fdc_fourier_len], self.time, self._fdc_fourier_len)
@@ -232,7 +219,6 @@ class GaussianModel:
 
         self.setTime(cur_time) # return origin time
 
-        #print(torch.sum((cur_pos - new_pos)**2) + torch.sum((cur_rot - new_rot)**2))
         return torch.sqrt(torch.sum((cur_pos - new_pos)**2) + torch.sum((cur_rot - new_rot)**2) + torch.sum((cur_sh - new_sh)**2))
 
 
@@ -430,9 +416,9 @@ class GaussianModel:
 
         pos_tp_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("tp_pos_")]
         pos_tp_names = sorted(pos_tp_names, key = lambda x: int(x.split('_')[-1] ))
-        if len(pos_tp_names) != 3 * ( pt_poly_len + 2* pt_fourier_len): # 3(position parameter 크기) * #(parameter)
+        if len(pos_tp_names) != 3 * ( pt_poly_len + 2* pt_fourier_len): 
             print("position parmeter error")
-        #assert len(pos_tp_names)== 3 * self._position_time_parameter_len # 3(position parameter 크기) * #(parameter)
+
         pos_tp = np.zeros((xyz.shape[0], len(pos_tp_names)))
         for idx, attr_name in enumerate(pos_tp_names):
             pos_tp[:, idx] = np.asarray(plydata.elements[0][attr_name])
@@ -440,7 +426,7 @@ class GaussianModel:
 
         rot_tp_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("tp_rot_")]
         rot_tp_names = sorted(rot_tp_names, key = lambda x: int(x.split('_')[-1] ))
-        if len(rot_tp_names) != len(rot_names) * (rot_poly_len + 2 * rot_fourier_len): # 4(rotation parameter 크기) * #(parameter)
+        if len(rot_tp_names) != len(rot_names) * (rot_poly_len + 2 * rot_fourier_len): 
             print("rotation parmeter error")
         rot_tp = np.zeros((xyz.shape[0], len(rot_tp_names)))
         for idx, attr_name in enumerate(rot_tp_names):
@@ -451,8 +437,6 @@ class GaussianModel:
         f_dc_tp_names = sorted(f_dc_tp_names, key = lambda x: int(x.split('_')[-1] ))
         if len(f_dc_tp_names) != 3 * (fdc_poly_len + 2*fdc_fourier_len):
             print("color parmeter error")
-            #print(f"f_dc_tp_names length : {len(f_dc_tp_names)}, parameters_len : {self._features_dc_time_parameter_len}")
-            #assert len(f_dc_tp_names)== 3 * self._features_dc_time_parameter_len # (f_dc parameter 크기) * #(parameter)
         f_dc_tp = np.zeros((xyz.shape[0], len(f_dc_tp_names)))
         for idx, attr_name in enumerate(f_dc_tp_names):
             f_dc_tp[:,idx] = np.asarray(plydata.elements[0][attr_name])
@@ -460,10 +444,8 @@ class GaussianModel:
 
         f_rest_tp_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("tp_f_rest_")]
         f_rest_tp_names = sorted(f_rest_tp_names, key = lambda x: int(x.split('_')[-1] ))
-        if len(f_rest_tp_names) != len(extra_f_names) * (frt_poly_len + frt_fourier_len): # (f_rest parameter 크기) * #(parameter)
+        if len(f_rest_tp_names) != len(extra_f_names) * (frt_poly_len + frt_fourier_len): 
             print("sh rest parameter error")
-            #print(f"f_rest_tp_names : {len(f_rest_tp_names)}, len(extra_f_names) : {len(extra_f_names)}, parameter_size : {self._features_rest_time_parameter_len} ")
-            #assert len(f_rest_tp_names)== len(extra_f_names) * self._features_rest_time_parameter_len # (f_rest parameter 크기) * #(parameter)
         f_rest_tp = np.zeros((xyz.shape[0], len(f_rest_tp_names)))
         for idx, attr_name in enumerate(f_rest_tp_names):
             f_rest_tp[:, idx] = np.asarray(plydata.elements[0][attr_name])

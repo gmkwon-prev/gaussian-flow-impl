@@ -24,20 +24,7 @@ from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 
 from scipy.spatial import KDTree
-import numpy as np
-import numba as nb
 import shutil
-
-@nb.njit
-def find_top_p_elements(dataaa, p):
-    results = np.zeros((dataaa.shape[0], p), dtype=dataaa.dtype)
-    count_all = np.zeros((dataaa.shape[0], p), dtype=dataaa.dtype)
-    for i in range(dataaa.shape[0]):
-        counts = np.bincount(dataaa[i])
-        top_5 = np.argsort(counts)[::-1][:p]
-        results[i, :] = top_5
-        count_all[i, :] = np.sort(counts)[::-1][:p]
-    return results, count_all
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -110,18 +97,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        ### weight decay (lasso) for time parameters. 
         #time_smooth_loss=torch.nanmean(torch.abs(gaussians._position_time_parameter)) 
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-        lasso_loss = 0
+        weight_decay = 0
         time_smooth_loss = 0
         knn_rigid_loss = 0
 
         if iteration > opt.dddm_from_iter:
-            #print(f"{torch.nanmean(torch.abs(gaussians._position_time_parameter) )},{torch.nanmean(torch.abs(gaussians._rotation_time_parameter))} +{torch.nanmean(torch.abs(gaussians._features_dc_time_parameter) )} +{torch.nanmean(torch.abs(gaussians._features_rest_time_parameter) )}") 
-            lasso_loss = torch.sum(torch.pow(gaussians._position_time_parameter,2 ) ) +torch.sum(torch.pow(gaussians._rotation_time_parameter,2)) +torch.sum(torch.pow(gaussians._features_dc_time_parameter, 2) ) #+torch.nanmean(torch.abs(gaussians._features_rest_time_parameter) ) 
-            if lasso_loss >0:
-                loss +=opt.lambda_lasso * lasso_loss
+            weight_decay = torch.sum(torch.pow(gaussians._position_time_parameter,2 ) ) +torch.sum(torch.pow(gaussians._rotation_time_parameter,2)) +torch.sum(torch.pow(gaussians._features_dc_time_parameter, 2) ) #+torch.nanmean(torch.abs(gaussians._features_rest_time_parameter) ) 
+            if weight_decay >0:
+                loss +=opt.lambda_weight_decay * weight_decay
             time_smooth_loss = gaussians.get_time_smooth_loss(scene.scene_info.time_delta /10)
             if time_smooth_loss > 0: # sqrt(0) has inf on its gradient, so it makes Nan at backpropagation step.
                 loss += time_smooth_loss
@@ -141,79 +126,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             near_points =gaussians.get_xyz.to(torch.device('cpu'))[indices.squeeze()].reshape(points.shape)
             if points.shape != near_points.shape:
                 print("Error occur on knn rigid_loss")
-            #knn_rigid_loss =torch.sum(torch.sqrt( (near_points - points) **2  ))
             
             powersum = torch.sum((near_points - points) **2  ,dim=-1)
             knn_rigid_loss = torch.sum(torch.sqrt( powersum[torch.where(powersum > 0)] ))
             if knn_rigid_loss >0:
                 loss+= opt.lambda_knn * knn_rigid_loss.to(loss.device)
         
-        """ 
-        if iteration > opt.densify_until_iter and iteration < opt.knn_until_iter:
-        #if iteration > 1000:
-            #gaussians.setTime(viewpoint_cam.time + scene.scene_info.time_delta * 0.5)
-            d_xyz = gaussians.D_xyz().to(torch.device('cpu')) # N , 3, 3,
-            d_rotation = gaussians.D_rotation().to(torch.device('cpu'))# N , 4, 3
-            d_feature = gaussians.D_features().to(torch.device('cpu')).reshape((d_xyz.shape[0], -1))# N 1 3
-
-            #print(d_xyz.shape)
-            #print(d_rotation.shape)
-            #print(d_feature.shape)
-
-            d_all = torch.cat([d_xyz, d_rotation, d_feature], dim=1 )    
-            #print(d_all.shape)
-            #return
-            origin_all = d_all[:,None,:].repeat(1,opt.knn_param, 1)
-            near_all = d_all[indices.numpy().squeeze()]
-            #print(origin_all.shape)
-            #print(near_all.shape)
-            near_all = near_all.reshape(origin_all.shape)
-
-            powersum = torch.sum((origin_all - near_all) **2  ,dim=-1)
-            
-            knn_rigid_loss = torch.sum(torch.sqrt( powersum[torch.where(powersum > 0)] ))
-            if knn_rigid_loss >0:
-                loss+= opt.lambda_knn * knn_rigid_loss.to(loss.device)
-            #gaussians.setTime(viewpoint_cam.time)
-        
-        
-
-        knn_rigid_loss = 0
-        if iteration == opt.densify_until_iter:
-            current_time = gaussians.time
-            indices_all = []
-            for t in np.arange(0.1, 1, 0.2):
-                gaussians.setTime(t)
-                data = gaussians.get_xyz.to(torch.device('cpu')).clone().detach().numpy() #torch.tensor(gaussians.get_xyz, device='cpu').numpy()
-                tree = KDTree(data)
-                distances, indices = tree.query(data, k=opt.knn_param +1) # 논문에 안적혀있다... 임의로 7이라 정의
-                indices_all.append(indices[:,1:]) # 가장 첫 번째 항은 자기자신. 따라서 배제.
-            
-            indices_np = np.stack(indices_all)
-            indices_np = np.transpose(indices_np, (1, 0, 2))
-            indices_np = indices_np.reshape((indices_np.shape[0], -1))
-            nearest_points_index_np, counts = find_top_p_elements(indices_np , opt.knn_param)
-            nearest_points_index = torch.tensor(nearest_points_index_np)
-
-            gaussians.time = current_time
-
-        if iteration > opt.densify_until_iter and iteration < opt.knn_until_iter:
-            gaussian_means = gaussians.get_xyz.to(torch.device('cpu')).clone().detach()
-            points = gaussian_means[:,None,:].repeat(1,opt.knn_param, 1) #torch.tensor(gaussians.get_xyz, device='cpu')[:,None,:].repeat(1,opt.knn_param, 1)
-            if points.shape[0] != nearest_points_index.shape[0] or points.shape[1] != nearest_points_index.shape[1]:
-                print("Error occur on knn rigid_loss")
-            #print(torch.tensor(gaussians.get_xyz, device='cpu').shape)
-            #print(indices.shape)
-            #print(torch.tensor(gaussians.get_xyz, device='cpu')[indices.squeeze()].shape)
-            near_points =torch.tensor(gaussians.get_xyz, device='cpu')[nearest_points_index.squeeze()].reshape(points.shape)
-            #near_points = torch.tensor([self.get_xyz[index] for index in self._indices])
-            if points.shape != near_points.shape:
-                print("Error occur on knn rigid_loss")
-            knn_rigid_loss =torch.sum(torch.sqrt( torch.sum((near_points - points) **2  ,dim=-1) ))
-           
-            if knn_rigid_loss >0:
-                loss+= opt.lambda_knn * knn_rigid_loss.to(loss.device)
-        """
         cur_loss= loss.item()
         loss.backward()
 

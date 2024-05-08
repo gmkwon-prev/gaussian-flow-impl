@@ -363,8 +363,6 @@ def readHypernerfSceneInfo(path, eval):
     ply_path = os.path.join(path, "points.npy")
     xyz = np.load(ply_path, allow_pickle=True)
     xyz = (xyz - scene_center) * coord_scale
-    #xyz = xyz.astype(np.float32)[:, None, :] # xyz의 형태를 늘린다. > 아예 초기에 parameter 확보. (나머지는 parameter들은 여기 의존.)
-    #xyz = np.concatenate([xyz, np.zeros((xyz.shape[0], 16, 3))], axis=1)#12, 3))], axis=1) # 초깃값은 0으로. 각 parameter은 총 12개 확보. 이는 최대 parameter을 12로 잡은것. parameter 수 L은 argument에서 변동가능.
     shs = np.random.random((xyz.shape[0], 3)) / 255.0
     pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((xyz.shape[0], 3)))   
 
@@ -374,7 +372,6 @@ def readHypernerfSceneInfo(path, eval):
                            #vis_cameras=vis_cam_infos,
                            nerf_normalization=nerf_normalization,
                            ply_path=ply_path, time_delta=1/max_time)
-    #print(f"current max time : {max_time}") #result : 163. 기대하는 값과 동일
     return scene_info
 
 

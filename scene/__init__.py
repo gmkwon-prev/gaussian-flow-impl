@@ -46,7 +46,7 @@ class Scene:
         #elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
         #    print("Found transforms_train.json file, assuming Blender data set!")
         #    scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval)
-        if os.path.exists(os.path.join(args.source_path, "dataset.json")): ### EfficientDynamic
+        if os.path.exists(os.path.join(args.source_path, "dataset.json")): ### Hypernerf, copied from EfficientDynamic
             print("Found dataset.json, assuming HyperNeRF data set!")
             scene_info = sceneLoadTypeCallbacks["HyperNeRF"](args.source_path, args.eval)
         else:

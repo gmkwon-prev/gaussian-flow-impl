@@ -13,7 +13,6 @@ dependencies:
   - torchvision=0.13.1
   - tqdm
   - tensorboard
-  - shutil
   - scipy
   - pip:
     - submodules/diff-gaussian-rasterization
