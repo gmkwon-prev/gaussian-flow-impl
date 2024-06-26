@@ -42,7 +42,7 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
-        print(f"dddm parameter : {gaussians._position_time_parameter_len}, {gaussians._rotation_time_parameter_len}, {gaussians._features_dc_time_parameter_len}, {gaussians._features_rest_time_parameter_len}")
+        print(f"dddm parameter : ({gaussians._pt_poly_len}, {gaussians._pt_fourier_len}), ({gaussians._rot_poly_len}, {gaussians._rot_fourier_len}), ({gaussians._fdc_poly_len}, {gaussians._fdc_fourier_len})")
         if not skip_train:
              render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background)
 

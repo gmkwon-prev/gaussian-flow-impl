@@ -379,14 +379,14 @@ class GaussianModel:
         opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
         
         others = np.asarray(plydata.elements[0]["others"])
-        pt_poly_len = int(others[2,0])
-        pt_fourier_len = int(others[3,0])
-        rot_poly_len = int(others[4,0])
-        rot_fourier_len = int(others[5,0])
-        fdc_poly_len = int(others[6,0])
-        fdc_fourier_len = int(others[7,0])
-        frt_poly_len = int(others[8,0])
-        frt_fourier_len = int(others[9,0])
+        pt_poly_len = int(others[2])
+        pt_fourier_len = int(others[3])
+        rot_poly_len = int(others[4])
+        rot_fourier_len = int(others[5])
+        fdc_poly_len = int(others[6])
+        fdc_fourier_len = int(others[7])
+        frt_poly_len = int(others[8])
+        frt_fourier_len = int(others[9])
 
         features_dc = np.zeros((xyz.shape[0], 3, 1))
         features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
@@ -422,7 +422,7 @@ class GaussianModel:
         pos_tp = np.zeros((xyz.shape[0], len(pos_tp_names)))
         for idx, attr_name in enumerate(pos_tp_names):
             pos_tp[:, idx] = np.asarray(plydata.elements[0][attr_name])
-        pos_tp = pos_tp.reshape((xyz.shape[0],3, self._position_time_parameter_len))
+        pos_tp = pos_tp.reshape((xyz.shape[0],3, pt_poly_len + 2* pt_fourier_len))
 
         rot_tp_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("tp_rot_")]
         rot_tp_names = sorted(rot_tp_names, key = lambda x: int(x.split('_')[-1] ))
@@ -431,7 +431,7 @@ class GaussianModel:
         rot_tp = np.zeros((xyz.shape[0], len(rot_tp_names)))
         for idx, attr_name in enumerate(rot_tp_names):
             rot_tp[:, idx] = np.asarray(plydata.elements[0][attr_name])
-        rot_tp = rot_tp.reshape((*rots.shape, self._rotation_time_parameter_len))
+        rot_tp = rot_tp.reshape((*rots.shape, rot_poly_len + 2 * rot_fourier_len))
 
         f_dc_tp_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("tp_f_dc_")]
         f_dc_tp_names = sorted(f_dc_tp_names, key = lambda x: int(x.split('_')[-1] ))
@@ -440,16 +440,16 @@ class GaussianModel:
         f_dc_tp = np.zeros((xyz.shape[0], len(f_dc_tp_names)))
         for idx, attr_name in enumerate(f_dc_tp_names):
             f_dc_tp[:,idx] = np.asarray(plydata.elements[0][attr_name])
-        f_dc_tp = f_dc_tp.reshape((*features_dc.shape, self._features_dc_time_parameter_len))
+        f_dc_tp = f_dc_tp.reshape((*features_dc.shape, fdc_poly_len + 2*fdc_fourier_len))
 
         f_rest_tp_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("tp_f_rest_")]
         f_rest_tp_names = sorted(f_rest_tp_names, key = lambda x: int(x.split('_')[-1] ))
-        if len(f_rest_tp_names) != len(extra_f_names) * (frt_poly_len + frt_fourier_len): 
+        if len(f_rest_tp_names) != len(extra_f_names) * (frt_poly_len + 2*frt_fourier_len): 
             print("sh rest parameter error")
         f_rest_tp = np.zeros((xyz.shape[0], len(f_rest_tp_names)))
         for idx, attr_name in enumerate(f_rest_tp_names):
             f_rest_tp[:, idx] = np.asarray(plydata.elements[0][attr_name])
-        f_rest_tp = f_rest_tp.reshape((*features_extra.shape, self._features_rest_time_parameter_len))
+        f_rest_tp = f_rest_tp.reshape((*features_extra.shape, frt_poly_len + 2*frt_fourier_len))
 
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
@@ -458,14 +458,14 @@ class GaussianModel:
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
         
-        self._pt_poly_len = torch.tensor(int(others[2,0]), dtype=torch.int, device = "cuda")
-        self._pt_fourier_len = torch.tensor(int(others[3,0]), dtype=torch.int, device = "cuda")
-        self._rot_poly_len = torch.tensor(int(others[4,0]), dtype=torch.int, device = "cuda")
-        self._rot_fourier_len = torch.tensor(int(others[5,0]), dtype=torch.int, device = "cuda")
-        self._fdc_poly_len = torch.tensor(int(others[6,0]), dtype=torch.int, device = "cuda")
-        self._fdc_fourier_len = torch.tensor(int(others[7,0]), dtype=torch.int, device = "cuda")
-        self._frt_poly_len = torch.tensor(int(others[8,0]), dtype=torch.int, device = "cuda")
-        self._frt_fourier_len = torch.tensor(int(others[9,0]), dtype=torch.int, device = "cuda")
+        self._pt_poly_len = torch.tensor(int(others[2]), dtype=torch.int, device = "cuda")
+        self._pt_fourier_len = torch.tensor(int(others[3]), dtype=torch.int, device = "cuda")
+        self._rot_poly_len = torch.tensor(int(others[4]), dtype=torch.int, device = "cuda")
+        self._rot_fourier_len = torch.tensor(int(others[5]), dtype=torch.int, device = "cuda")
+        self._fdc_poly_len = torch.tensor(int(others[6]), dtype=torch.int, device = "cuda")
+        self._fdc_fourier_len = torch.tensor(int(others[7]), dtype=torch.int, device = "cuda")
+        self._frt_poly_len = torch.tensor(int(others[8]), dtype=torch.int, device = "cuda")
+        self._frt_fourier_len = torch.tensor(int(others[9]), dtype=torch.int, device = "cuda")
 
         self._position_time_parameter = nn.Parameter(torch.tensor(pos_tp, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation_time_parameter = nn.Parameter(torch.tensor(rot_tp, dtype=torch.float, device="cuda").requires_grad_(True))

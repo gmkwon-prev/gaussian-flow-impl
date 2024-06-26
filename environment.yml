@@ -1,4 +1,4 @@
-name: gaussian_flow2
+name: gaussian_flow_impl
 channels:
   - pytorch
   - conda-forge
