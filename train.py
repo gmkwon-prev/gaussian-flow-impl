@@ -119,11 +119,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             indices = torch.tensor(indices[:,1:]) # first result of KDTree.query is itself, so remove it.
         
         if iteration > opt.densify_until_iter and iteration < opt.knn_until_iter:
-            gaussian_means = gaussians.get_xyz.to(torch.device('cpu'))
+            gaussian_means = gaussians.get_xyz.to(torch.device('cpu'))[visibility_filter]
             points = gaussian_means[:,None,:].repeat(1,opt.knn_param, 1)
-            if points.shape[0] != indices.shape[0] or points.shape[1] != indices.shape[1]:
-                print("Error occur on knn rigid_loss")
-            near_points =gaussians.get_xyz.to(torch.device('cpu'))[indices.squeeze()].reshape(points.shape)
+            near_points =gaussians.get_xyz.to(torch.device('cpu'))[indices[visibility_filter].squeeze()].reshape(points.shape)
             if points.shape != near_points.shape:
                 print("Error occur on knn rigid_loss")
             
@@ -148,7 +146,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             
             if iteration % 1000 == 0:
                 print("")
-                print(f"current loss : {(1.0 - opt.lambda_dssim)} * {Ll1} + {opt.lambda_dssim} * {(1.0 - ssim(image, gt_image))} + {opt.lambda_lasso * lasso_loss}+{time_smooth_loss} +{knn_rigid_loss}= {cur_loss}")
+                print(f"current loss : {(1.0 - opt.lambda_dssim)} * {Ll1} + {opt.lambda_dssim} * {(1.0 - ssim(image, gt_image))} + {opt.lambda_weight_decay * weight_decay}+{time_smooth_loss} +{knn_rigid_loss}= {cur_loss}")
                 print(f"gaussian params :{torch.sum(torch.abs(gaussians._position_time_parameter))}, {torch.sum(torch.abs(gaussians._rotation_time_parameter))}")
                 print(f"time : {viewpoint_cam.time}, {gaussians.time}")
                 print(f"lambdas : {gaussians._lambda_s}, {gaussians._lambda_b}")

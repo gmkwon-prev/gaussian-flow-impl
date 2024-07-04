@@ -81,17 +81,18 @@ class OptimizationParams(ParamGroup):
         self.rotation_lr = 0.001
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
-        self.densification_interval = 100
+        self.densification_interval = 100#1000
         self.opacity_reset_interval = 3000 
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
         self.random_background = False
         self.dddm_from_iter = 2000 # supple A paragraph 2
-        self.knn_param = 27
+        self.knn_param = 17
         self.lambda_knn = 1e-4
-        self.knn_until_iter = 20_000 # suppl A paragraph 2
-        self.dddm_param_len = ((16,16),(16,16),(16,16),(0,0))#((8,4), (8,4), (8,4), (0, 0))
+        self.knn_from_iter = 15000
+        self.knn_until_iter = 20000#25_000 # suppl A paragraph 2
+        self.dddm_param_len = ((8,4), (8,4), (8,4), (0, 0))#((16,16),(16,16),(16,16),(0,0))#((8,4), (8,4), (8,4), (0, 0))
         self.lambda_weight_decay = 8e-7
 
         super().__init__(parser, "Optimization Parameters")
