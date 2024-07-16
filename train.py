@@ -119,9 +119,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             indices = torch.tensor(indices[:,1:]) # first result of KDTree.query is itself, so remove it.
         
         if iteration > opt.densify_until_iter and iteration < opt.knn_until_iter:
-            gaussian_means = gaussians.get_xyz.to(torch.device('cpu'))[visibility_filter]
+            vf = visibility_filter.clone().detach().to(torch.device('cpu'))
+            gaussian_means = gaussians.get_xyz.to(torch.device('cpu'))[vf]
             points = gaussian_means[:,None,:].repeat(1,opt.knn_param, 1)
-            near_points =gaussians.get_xyz.to(torch.device('cpu'))[indices[visibility_filter].squeeze()].reshape(points.shape)
+            near_points =gaussians.get_xyz.to(torch.device('cpu'))[indices[vf].squeeze()].to(torch.device('cpu')).reshape(points.shape)
             if points.shape != near_points.shape:
                 print("Error occur on knn rigid_loss")
             
